@@ -1,0 +1,7 @@
+### CircuitPython ###
+.Trashes
+.metadata_never_index
+.fseventsd/
+logs/
+boot_out.txt
+*.toml
