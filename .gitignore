@@ -3,5 +3,6 @@
 .metadata_never_index
 .fseventsd/
 logs/
+System Volume Information/
 boot_out.txt
 *.toml
