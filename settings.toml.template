@@ -1,0 +1,32 @@
+# To auto-connect to Wi-Fi
+CIRCUITPY_WIFI_SSID=""
+CIRCUITPY_WIFI_PASSWORD=""
+
+# To enable modifying files from the web
+# Leave the User field blank when you type the password into the browser.
+CIRCUITPY_WEB_API_PASSWORD=""
+CIRCUITPY_WEB_API_PORT=80
+
+# connection to postman mock server for testing
+#FLINK_URL = "https://xyz.pstmn.io"
+#FLINK_API_KEY = "xyz"
+
+# connection to Flink
+FLINK_URL = "https://xyz.flink.coop/key_boxes/boxes/"
+FLINK_API_KEY = "xyz"
+
+# Per device variables
+ID="" # Hunziker, Hobelwerk
+SN=0
+COMPARTMENT_NUMBER = 0
+LARGE_COMPARTMENT = 0
+
+# Secret, permanent, maintainance keycodes
+MAINTAINANCE_CODE_PREFIX="000000"
+
+# adafruit IO data, for debug IO
+ADAFRUIT_IO_USERNAME = ""
+ADAFRUIT_IO_KEY = "aio_"
+
+# stack size, default 1536
+CIRCUITPY_PYSTACK_SIZE = 12000
