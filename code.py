@@ -1,8 +1,9 @@
 # Ziemann Engineering Schlüsselkasten-Software
 # main code file
 
-version = "0.5"
-
+# SPDX-FileCopyrightText: 2023 Thomas Ziemann for Ziemann Engineering
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 # Changelog:
 # 0.1: initial hardware test version, major TODOs: flink connection, key pickup/return logic, display UI, logging
@@ -10,6 +11,8 @@ version = "0.5"
 # 0.3: added keypad readout, more key logic, working compartment interface
 # 0.4: dealing with content and door logic, adding regular keepalives, check accelerometer and light sensor
 # 0.5: logging to screen during startup, codes are always strings, compartments are a dict and the index is a char starting at '1', touch matrix handling shortened
+
+# TODO: add OTA updating, reorganize/push code into separate classes or files
 
 # general imports
 import time
@@ -58,6 +61,9 @@ from adafruit_io.adafruit_io import IO_MQTT
 import adafruit_logging as logging
 
 import compartment
+
+# version string
+version = "0.5"
 
 # enable watchdog to reset on error
 wd = microcontroller.watchdog

@@ -1,6 +1,10 @@
 # Ziemann Engineering Schlüsselkasten-Software
 # compartment class, each compartment gets an object
 
+# SPDX-FileCopyrightText: 2023 Thomas Ziemann for Ziemann Engineering
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 import time
 import digitalio
 

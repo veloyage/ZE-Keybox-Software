@@ -16,7 +16,7 @@ FLINK_URL = "https://xyz.flink.coop/key_boxes/boxes/"
 FLINK_API_KEY = "xyz"
 
 # Per device variables
-ID="" # Hunziker, Hobelwerk
+ID=""
 SN=0
 COMPARTMENT_NUMBER = 0
 LARGE_COMPARTMENT = 0
