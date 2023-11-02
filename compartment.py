@@ -12,22 +12,27 @@ maximum_on_time = 5 # set maximum lock on time
 check_time = 0.5 # time to sleep between door checks
 
 class compartment():
-    def __init__(self, input_pins, output_pins):
+    def __init__(self, input_pin, output_pin): # initialize with one IO pair
         self.type = "small" # small, big (only one, set manually)
         self.door_status = "closed" # closed, open, error (e.g. detected open without command)
         self.content_status = "present" # present, empty, unknown, assumes present on boot (TODO?)
-        self.status_inputs = input_pins
-        self.lock_outputs = output_pins
         self.LEDs = None
+        self.status_inputs = []
+        self.lock_outputs = []
+        self.add_input(input_pin)
+        self.add_output(output_pin)
 
-        # Setup output
-        for output in self.lock_outputs:
-            output.direction = digitalio.Direction.OUTPUT
+    # Setup input with a pull-up resistor enabled
+    def add_input(self, input_pin):
+        input_pin.direction = digitalio.Direction.INPUT
+        input_pin.pull = digitalio.Pull.UP
+        self.status_inputs.append(input_pin)
 
-        # Setup input with a pull-up resistor enabled
-        for input in self.status_inputs:
-            input.direction = digitalio.Direction.INPUT
-            input.pull = digitalio.Pull.UP
+
+    # Setup output
+    def add_output(self, output_pin):
+        output_pin.direction = digitalio.Direction.OUTPUT
+        self.lock_outputs.append(output_pin)
 
     def set_LEDs(self, color):
         for LED in self.LEDs:
