@@ -15,7 +15,8 @@ class compartment():
     def __init__(self, input_pin, output_pin): # initialize with one IO pair
         self.type = "small" # small, big (only one, set manually)
         self.door_status = "closed" # closed, open, error (e.g. detected open without command)
-        self.content_status = "present" # present, empty, unknown, assumes present on boot (TODO?)
+        self.content_status = "unknown" # present, empty, unknown (default on boot)
+        self.LED_connector = None
         self.LEDs = None
         self.status_inputs = []
         self.lock_outputs = []
@@ -28,15 +29,15 @@ class compartment():
         input_pin.pull = digitalio.Pull.UP
         self.status_inputs.append(input_pin)
 
-
     # Setup output
     def add_output(self, output_pin):
         output_pin.direction = digitalio.Direction.OUTPUT
+        output_pin.value = False
         self.lock_outputs.append(output_pin)
 
     def set_LEDs(self, color):
         for LED in self.LEDs:
-            LED = color
+            self.LED_connector[LED] = color
 
     def get_inputs(self):
         open = True

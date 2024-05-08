@@ -12,16 +12,25 @@
 # 0.4: dealing with content and door logic, adding regular keepalives, check accelerometer and light sensor
 # 0.5: logging to screen during startup, codes are always strings, compartments are a dict and the index is a char starting at '1', touch matrix handling shortened
 # 0.9: testing version, several small updates over 0.5, including new small font and better touch cal filtering
+# 0.9.1: test version, touchpad individual buttons via MPR121 instead of native matrix
+# 0.9.2: test version, battery monitor is optional, adafruit/TLS issues trigger a reconnect
+# 0.9.3: test version, switched to adafruit HTTP API and made calls to update only every minute instead of every second, improved handling of missing wifi / connection issues, maintainances codes are not printed
+# 1.0.0: initial production version, switched back to MQTT API
+# 1.1.0: bugfixes, commented sections removed, CP9.0 compatible, HW revision variable added, made all I2C ICs "optional", visual modifications, added error/warning icons,
+# 1.2.0: compartmentalized into ui.py, hardware.py, flink.py, networking.py
 
-# TODO: add OTA updating, reorganize/push code into separate classes or files, icons for missing wifi, flink or mains power (battery status), reconnect to wifi (and adafruit io) if connection lost
+
+# TODO: add OTA updating, get time from adafruit to account for DST
+
+# TODO: logging and versioning in separate .py files
 
 # general imports
 import time
 import board
 import digitalio
-#import analogio
-import terminalio
-import touchio
+
+# import analogio
+# import touchio
 import pwmio
 import busio
 import neopixel
@@ -32,176 +41,47 @@ import watchdog
 import os
 import storage
 
-import ipaddress
-import ssl
 import wifi
-import socketpool
-import rtc
-import adafruit_requests
-import adafruit_ntp
-
-import displayio
-from adafruit_display_text import bitmap_label
-from adafruit_bitmap_font import bitmap_font
-import terminalio
-import adafruit_imageload
-import adafruit_ili9341 # display
-from adafruit_display_shapes.rect import Rect
-
-import adafruit_miniqr
-import adafruit_logging as logging
-
-from adafruit_mcp230xx.mcp23017 import MCP23017 # port expander
-import adafruit_lis3dh # accelerometer
-from adafruit_ltr329_ltr303 import LTR329 # light sensor
-import adafruit_drv2605 # haptic driver
-from adafruit_max1704x import MAX17048 # battery monitor
+import ssl
 
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
-from adafruit_io.adafruit_io import IO_MQTT
+from adafruit_io.adafruit_io import IO_MQTT  # , IO_HTTP
 import adafruit_logging as logging
 
 import compartment
+import ui
+import hardware
+import flink
+import networking
 
 # version string
-version = "0.9"
+version = "1.2.0"
 
 # enable watchdog to reset on error
-#wd = microcontroller.watchdog
-#wd.timeout = 30
-#wd.mode = watchdog.WatchDogMode.RESET
+microcontroller.watchdog.timeout = 30 #  seconds
+microcontroller.watchdog.mode = watchdog.WatchDogMode.RAISE  # watchdog.WatchDogMode.RESET
 
 #
 # LOAD VARIABLES
 #
 
-ID = os.getenv("ID")
 SN = os.getenv("SN")
+HW_revision = os.getenv("HW_revision")
 
 compartment_number_saved = os.getenv("COMPARTMENT_NUMBER")
 large_compartments = os.getenv("LARGE_COMPARTMENTS").split()
 
 maintainance_code = os.getenv("MAINTAINANCE_CODE_PREFIX")
 
-wifi_ssid = os.getenv("CIRCUITPY_WIFI_SSID")
-wifi_pw = os.getenv("CIRCUITPY_WIFI_PASSWORD")
-
 aio_username = os.getenv("ADAFRUIT_IO_USERNAME")
 aio_key = os.getenv("ADAFRUIT_IO_KEY")
+aio_feed_name = os.getenv("ADAFRUIT_IO_FEED")
 
 tamper_alarm = os.getenv("TAMPER_ALARM")
 
 #
-# FLINK SETUP
-#
-
-flink_URL = os.getenv("FLINK_URL")
-flink_API_key = os.getenv("FLINK_API_KEY")
-
-# prepare for internet things
-if not wifi.radio.connected:
-    wifi.radio.connect(wifi_ssid, wifi_pw)
-
-pool = socketpool.SocketPool(wifi.radio)
-
-requests = adafruit_requests.Session(pool, ssl.create_default_context())
-
-# send status to Flink
-def put_status():
-    try:
-        response = requests.put(f"{flink_URL}/{ID}/status", headers={"Authorization": flink_API_key}, json={"time": format_time(), "uptime": f"{time.monotonic()}",
-            "serial": f"{SN}", "version": f"{version}", "compartments": f"{compartment_number_saved}", "large_compartments": f"{large_compartments}"})
-        return response.status_code
-    except Exception as e:
-        logger.error(f"Error putting status: {e}")
-
-# get codes from Flink
-def get_codes():
-    try:
-        response = requests.get(f"{flink_URL}/{ID}/codes", headers={"Authorization": flink_API_key})
-        return response.status_code, response.json()
-    except Exception as e:
-        logger.error(f"Error getting codes: {e}")
-
-def post_code_log(code, compartment_index):
-    if compartment_index is not None:
-        content = compartments[compartment_index].content_status
-        door = compartments[compartment_index].door_status
-    else:
-        content = None
-        door = None
-    try:
-        response = requests.post(f"{flink_URL}/{ID}/code_log", headers={"Authorization": flink_API_key}, json={"time": format_time(),
-                                        "code_entered": f"{code}", "compartment": f"{compartment_index}", "content": content, "door": door})
-        return response.status_code
-    except Exception as e:
-        logger.error(f"Error posting code log: {e}")
-
-
-class FlinkLogHandler(logging.Handler):
-    try:
-        def emit(self, record):
-            response = requests.post(f"{flink_URL}/{ID}/error_log", headers={"Authorization": flink_API_key}, json={"time": format_time(), "uptime": f"{record.created}", "level": f"{record.levelname}", "message": f"{record.msg}"})
-    except: # ignore, otherwise we will get another error while logging
-        pass
-
-#
-# DISPLAY SETUP
-#
-
-displayio.release_displays()
-
-spi = busio.SPI(board.SCK, MOSI=board.MOSI)
-
-display_bus = displayio.FourWire(spi, command=board.TX, chip_select=board.A4, reset=board.RX, baudrate=40000000)
-display = adafruit_ili9341.ILI9341(display_bus, width=320, height=240)
-
-backlight = pwmio.PWMOut(board.A5, frequency=2000, duty_cycle=int(1 * 65535))
-
-# Make the display context
-splash = displayio.Group()
-# display = board.DISPLAY
-
-font_large = bitmap_font.load_font("/fonts/LiberationSans-Bold-140.pcf")
-font_medium = bitmap_font.load_font("/fonts/LiberationSans-Bold-24.pcf")
-font_small = bitmap_font.load_font("/fonts/LiberationSans-Bold-10.pcf")
-
-logo, palette = adafruit_imageload.load("/images/logo.png", bitmap=displayio.Bitmap, palette=displayio.Palette)
-pos_x = int(((display.width) - logo.width) / 2)
-pos_y = int(((display.height) - logo.height) / 2)
-logo_grid = displayio.TileGrid(logo, pixel_shader=palette, x=pos_x, y=pos_y)
-
-rect = Rect(0, 0, 320, 240, fill=0xFFFFFF)
-
-splash.append(rect)
-splash.append(logo_grid)
-
-log_label_count = 5
-log_labels = []
-for x in range(log_label_count):
-    log_labels.append(bitmap_label.Label(font_small, text="", color=0x006060, x=2, y=180+12*x))
-    splash.append(log_labels[x])
-
-next_label = 0
-
-display.show(splash)
-
-#
 # LOGGING SETUP
 #
-
-# try to remount the storage, will only work if there is no USB connection
-#try:
-#    storage.remount("/", False)
-#except RuntimeError:
-#    pass
-
-# try to get the time from the internet
-try:
-    ntp = adafruit_ntp.NTP(pool, tz_offset=2)
-    rtc.RTC().datetime = ntp.datetime
-except:
-    online = False
 
 # Initialize log functionality
 logger = logging.getLogger("schlüsselkasten_log")
@@ -211,110 +91,138 @@ def format_time():
     t = time.localtime()
     return f"{t.tm_year}-{t.tm_mon:02}-{t.tm_mday:02}_{t.tm_hour:02}-{t.tm_min:02}-{t.tm_sec:02}"
 
-# prepare local file logging
-if time.localtime().tm_year < 2023: # time incorrect, likely not set due to missing internet connection
-    filename = "/logs/unknown_time.log"
-else:
-    t = time.localtime()
-    filename = f"/logs/{format_time()}.log"
 
 # check if we have storage access and if so, open local logfile
 try:
-    storage.remount("/", False)
+    storage.remount("/", False) # try to remount as writable, triggers exception if USB connected/visible
+    if (time.localtime().tm_year < 2023):  # time incorrect, likely not set due to missing internet connection
+        filename = "/logs/unknown_time.log"
+    else:
+        filename = f"/logs/{format_time()}.log"
+    # check if there is enough space and delete old logs if necessary
+    while True:
+        fsstat = os.statvfs("/")
+        free = fsstat[0] * fsstat[3]
+        if free > 100000:  # ~100kb should be more than enough for one new logfile
+            break
+        else:   # if too little free space, delete oldest logfile
+            logfilelist = os.listdir("/logs/")
+            logfilelist.sort()
+            os.remove("/logs/" + logfilelist[0])
     file_handler = logging.FileHandler(filename)
     logger.addHandler(file_handler)
     logger.info("Logging to local file started.")
     local_logging = True
 except (OSError, RuntimeError) as e:  # When the filesystem is NOT writable, it's likely due to being connected to a computer -> log to console
     local_logging = False
-    #if e.args[0] == 28: # filesystem full
+    # if e.args[0] == 28: # filesystem full
     stream_handler = logging.StreamHandler()
     logger.addHandler(stream_handler)
-    logger.info(e) # send error as info, as it may occur regularly and is handled
+    logger.info(e)  # send error as info, as it may occur regularly and is handled
     logger.info("Filesystem not writeable, logging to shell started.")
 
-# check if we have internet
-try:
-    ping_ip = ipaddress.IPv4Address("8.8.8.8")
-    ping = wifi.radio.ping(ip=ping_ip)
-    if ping == None:
-        raise Exception("Ping failed.")
-    online = True
-except Exception as e:
-    logger.error(e)
-    online = False
-
-# Callback function which will be called when a connection is established
-def connected(client):
-    client.subscribe("schlusselkasten-fach")
-
-# Callback function which will be called when a message comes from a subscribed feed
-def message(client, feed_id, payload):
-    if feed_id == "schlusselkasten-fach":
-        #print(payload)
-        payload = payload.split(" ")
-        command = payload[0]
-        if command == "status" and len(payload) == 2:
-            comp = payload[1]
-            if comp == "all":
-                logger.info(f"Open compartments: {check_all()}")
-            elif int(comp) > 0 and int(comp) <= len(compartments):
-                logger.info(f"Compartment {comp} status: door open: {compartments[comp].get_inputs()}, door status saved: {compartments[comp].door_status}, content status: {compartments[comp].content_status}.")
-        elif command == "open" and len(payload) == 2:
-            comp = payload[1]
-            if comp == "all":
-                open_all()
-            elif int(comp) > 0 and int(comp) <= len(compartments):
-                compartments[comp].open()
-            logger.info(f"Compartment open sent from Adafruit IO: {comp}")
-        elif command == "reset" and len(payload) == 1:
-            microcontroller.reset()
-        elif command == "tamper_alarm" and len(payload) == 2:
-            global tamper_alarm
-            if payload[1] == "off":
-                tamper_alarm = "off"
-            elif payload[1] == "on":
-                tamper_alarm = "on"
-
+# process received command
+def process_command(payload):
+    payload = payload.split(" ")
+    command = payload[0]
+    if command == "status" and len(payload) == 2:
+        comp = payload[1]
+        if comp == "all":
+            logger.info(f"Open compartments: {check_all()}")
+        elif int(comp) > 0 and int(comp) <= len(compartments):
+            logger.info(f"Compartment {comp} status: door open: {compartments[comp].get_inputs()}, door status saved: {compartments[comp].door_status}, content status: {compartments[comp].content_status}.")
+    elif command == "open" and len(payload) == 2:
+        comp = payload[1]
+        if comp == "all":
+            ui.open_all(compartments)
+        elif int(comp) > 0 and int(comp) <= len(compartments):
+            compartments[comp].open()
+        logger.info(f"Compartment open sent from MQTT broker: {comp}")
+    elif command == "reset" and len(payload) == 1:
+        microcontroller.reset()
+    elif command == "tamper_alarm" and len(payload) == 2:
+        global tamper_alarm
+        if payload[1] == "off":
+            tamper_alarm = "off"
+        elif payload[1] == "on":
+            tamper_alarm = "on"
 
 class AIOLogHandler(logging.Handler):
-            def emit(self, record):
-                try:
-                    io.publish("schlusselkasten-status", self.format(record))
-                except:
-                    pass
-                    #logger.error(f"Error logging to Adafruit IO: {e}")
+    def emit(self, record):
+        try:
+            io.publish(aio_feed_name + "status", self.format(record))
+        except Exception as e:  # ignore exception, logging would trigger further exceptions
+            print(e)
+            pass
 
 class DisplayLogHandler(logging.Handler):
-            def emit(self, record):
-                global log_labels, next_label
-                log_labels[next_label].text = record.msg
-                next_label += 1
-                if next_label == log_label_count:
-                    next_label = 0
+    def emit(self, record):
+        ui.log_labels[ui.next_label].text = record.msg
+        ui.next_label += 1
+        if ui.next_label == len(ui.log_labels):
+            ui.next_label = 0
+
 display_log = DisplayLogHandler()
 logger.addHandler(display_log)
 
-# if we have internet, connect to adafruit IO and use it for logging
-if online:
-    # Initialize a new MQTT Client object
-    mqtt_client = MQTT.MQTT(broker="io.adafruit.com", port=8883, is_ssl=True, username=aio_username, password=aio_key, socket_pool=pool, ssl_context=ssl.create_default_context())
-    try:
-        # Initialize an Adafruit IO MQTT Client
-        io = IO_MQTT(mqtt_client)
-        # Set up the callback methods above
-        io.on_connect = connected
-        io.on_message = message
-        io.connect()
+#
+# NETWORKING SETUP
+#
+try:
+    wifi_connected = networking.connect_wifi()
+except Exception as e:
+    wifi_connected = False
+    logger.error(f"Error connecting to wifi: {e}")
 
-        logger.addHandler(AIOLogHandler())
-        logger.info("Logging to Adafruit IO started.")
-    except Exception as e:
-        logger.error(f"Error connecting to Adafruit IO: {e}")
+try:
+    ping = networking.get_ping()
+except Exception as e:
+    ping = None
+    logger.error(f"Error during ping: {e}")
 
-    flink_log_handler = FlinkLogHandler(logging.ERROR)
-    logger.addHandler(flink_log_handler)
-    logger.info("Logging to Flink started.")
+try:
+    networking.get_time()
+except Exception as e:
+    logger.error(f"Error getting time: {e}")
+
+
+# Callback function which will be called when a connection is established
+def connected(client):
+    client.subscribe(aio_feed_name + "command")
+
+# Callback function which will be called when a message comes from a subscribed feed
+def message(client, feed_id, payload):
+    if feed_id == (aio_feed_name + "command"):
+        process_command(payload)
+
+# try to connect to MQTT broker and use it for logging
+# Initialize a new MQTT Client object
+mqtt_client = MQTT.MQTT(
+    broker="io.adafruit.com",
+    port=8883,
+    is_ssl=True,
+    username=aio_username,
+    password=aio_key,
+    socket_pool=networking.pool,
+    ssl_context=ssl.create_default_context(),
+    keep_alive = 120,
+)
+try:
+    # Initialize an MQTT broker MQTT Client
+    io = IO_MQTT(mqtt_client)
+    # Set up the callback methods above
+    io.on_connect = connected
+    io.on_message = message
+    io.connect()
+
+    logger.addHandler(AIOLogHandler())
+    logger.info("Logging to MQTT broker started.")
+except Exception as e:
+    logger.error(f"Error connecting to MQTT broker: {e}")
+
+flink_log_handler = flink.FlinkLogHandler(logging.ERROR)
+logger.addHandler(flink_log_handler)
+logger.info("Logging to Flink started.")
 
 # read processor UID and format it as hex-string (like it is in the boot_out.txt)
 def hex_format(hex_in):
@@ -322,396 +230,245 @@ def hex_format(hex_in):
     for x in hex_in:
         string += f"{x:0{2}X}"
     return string
+
+# update warning icons
+if hardware.haptic is None or hardware.touch_sensor is None or hardware.accelerometer is None or hardware.light_sensor is None or hardware.battery_monitor is None:
+    ui.maintainance_grid.hidden = False
+
 #
 # INFO MESSAGES
 #
-logger.info(f"Ziemann Engineering Schlüsselkasten {ID}")
+logger.info(f"Ziemann Engineering Schlüsselkasten {flink.ID}")
 logger.info(f"Serial number {SN}, compartments: {compartment_number_saved}, large compartments: {large_compartments}")
-logger.info(f"Software version {version}, CircuitPython version: {sys.implementation.version[0]}.{sys.implementation.version[1]}.{sys.implementation.version[2]}")
-
-reset_reason = microcontroller.cpu.reset_reason
+logger.info(f"Versions: Software: {version}, hardware: {HW_revision}, CircuitPython: {sys.implementation.version[0]}.{sys.implementation.version[1]}.{sys.implementation.version[2]}")
 logger.info(f"CPU ID: {hex_format(microcontroller.cpu.uid)}, temperature: {microcontroller.cpu.temperature:.2}°C")
-logger.info(f"Last reset reason: {str(microcontroller.cpu.reset_reason).split('.')[2]}, supervisor run reason: {str(supervisor.runtime.run_reason).split('.')[2]}")
-if wifi.radio.connected:
+logger.info(f"Reset reason: {str(microcontroller.cpu.reset_reason).split('.')[2]}, run reason: {str(supervisor.runtime.run_reason).split('.')[2]}")
+if wifi_connected:
     logger.info(f"Wifi connected to {wifi.radio.ap_info.ssid}, RSSI: {wifi.radio.ap_info.rssi}.")
 else:
     logger.warning("Wifi not connected.")
+    ui.no_wifi_grid.hidden = False
 logger.info(f"IP address: {wifi.radio.ipv4_address}, MAC: {hex_format(wifi.radio.mac_address)}")
 
 if ping is not None:
     logger.info(f"Ping to google: {ping*1000} ms.")
 else:
-    logger.warning(f"Ping to google failed.")
+    logger.warning("Ping to google failed.")
 
-status_code = put_status()
+status_code = flink.put_status(logger, time.monotonic(), SN, version, compartment_number_saved, large_compartments)
 if status_code == 200:
     logger.info(f"Response from Flink: {status_code}.")
 else:
     logger.warning(f"Response from Flink: {status_code}.")
-#
-# HARDWARE SETUP
-#
-# set up 12V enable pin
-enable_12V = digitalio.DigitalInOut(board.A3)
-enable_12V.direction = digitalio.Direction.OUTPUT
-enable_12V.value = False
+    ui.no_flink_grid.hidden = False
 
-# set up touch matrix
-column_left = touchio.TouchIn(board.D9)
-column_middle = touchio.TouchIn(board.D6)
-column_right = touchio.TouchIn(board.D5)
+if hardware.battery_monitor is not None:
+    logger.info(f"Battery status: {hardware.battery_monitor.cell_voltage:.2f}V, {hardware.battery_monitor.cell_percent:.1f} %")
 
-row_1 = touchio.TouchIn(board.D10)
-row_2 = touchio.TouchIn(board.D11)
-row_3 = touchio.TouchIn(board.D12)
-row_4 = touchio.TouchIn(board.D13)
+logger.info(f"{len(hardware.port_expanders)} compartment PCBs / rows detected.")
+if len(hardware.port_expanders)*8 < compartment_number_saved:
+    logger.error("Insufficient compartment PCBs detected.")
+    ui.maintainance_grid.hidden = False
 
-touch_inputs = [row_1, row_2, row_3, row_4, column_left, column_middle, column_right]
-touch_margin = [0] * 7
-
-## LED config
-LED_internal = neopixel.NeoPixel(board.A2, 6)
-LED_connector_1 = neopixel.NeoPixel(board.A0, 32)
-LED_connector_2 = neopixel.NeoPixel(board.A1, 1)
-
-# piezo buzzer
-piezo = pwmio.PWMOut(board.MISO, frequency=1000, duty_cycle=0)
-
-## I2C init
-i2c = busio.I2C(board.SCL, board.SDA, frequency=50000)
-
-haptic = adafruit_drv2605.DRV2605(i2c) # 0x5A
-haptic.use_LRM()
-haptic.sequence[0] = adafruit_drv2605.Effect(24) # effect 1: strong click, 4: sharp click, 24: sharp tick,  27: short double click strong, 16: 1000 ms alert
-
-accelerometer = adafruit_lis3dh.LIS3DH_I2C(i2c, address=0x19)
-
-light_sensor = LTR329(i2c) # 0x29
-
-battery_monitor = MAX17048(i2c) # 0x36
-
-# also on the bus at 0x38: touch screen controller FT6206
-
-# get connected port expanders (adresses from 0x20 to 0x27, prototype PCBs: 0x24 to 0x27)
-port_expanders = []
-for addr in range(0x20, 0x28):
-    try:
-        port_expanders.append(MCP23017(i2c, address=addr))
-    except: # ValueError if device does not exist, ignore
-        pass
 
 # calculate which spaces the large compartments take up.
 # spaces = spots/port expander connections where individual compartments could be
 # spaces formula: expander_index * 8 + compartment_per_expander + 1
-#large_compartment_spaces = {}
+# large_compartment_spaces = {}
 for index in large_compartments:
-    space = int(index) # TODO?: only works for first large compartment
-large_compartment_spaces = [space, space+1, space+8, space+9]
+    space = int(index)  # TODO?: only works for first large compartment
+large_compartment_spaces = [space, space + 1, space + 8, space + 9]
 
 # create compartment objects with IO ports, and a dict for all of them
 compartments = {}
 counter = 1
-for index, expander in enumerate(port_expanders):
+for index, expander in enumerate(hardware.port_expanders):
     for compartment_per_expander in range(8):
         space = index * 8 + compartment_per_expander + 1
         # large compartment handling
         if space in large_compartment_spaces:
             pos = large_compartment_spaces.index(space)
-            if pos == 0: # first space: create comp as normal
-                pass # skip to normal part
-            elif pos == 1 or pos == 3: # second, fourth space: add LED to first
-                compartments[str(large_compartment_spaces[0])].LEDs.append(LED_connector_1[space-1])
+            if pos == 0:  # first space: create comp as normal
+                pass  # skip to normal part
+            elif pos == 1 or pos == 3:  # second, fourth space: add LED to first
+                compartments[str(large_compartment_spaces[0])].LEDs.append(space - 1)
                 continue
-            elif pos == 2: # third space: add IO to first, also LED
-                compartments[str(large_compartment_spaces[0])].add_input(expander.get_pin(compartment_per_expander*2))
-                compartments[str(large_compartment_spaces[0])].add_output(expander.get_pin(compartment_per_expander*2+1))
-                compartments[str(large_compartment_spaces[0])].LEDs.append(LED_connector_1[space-1])
+            elif pos == 2:  # third space: add IO to first, also LED
+                compartments[str(large_compartment_spaces[0])].add_input(expander.get_pin(compartment_per_expander * 2))
+                compartments[str(large_compartment_spaces[0])].add_output(expander.get_pin(compartment_per_expander * 2 + 1))
+                compartments[str(large_compartment_spaces[0])].LEDs.append(space - 1)
                 continue
         # normal compartments
-        input_pin = expander.get_pin(compartment_per_expander*2)
-        output_pin = expander.get_pin(compartment_per_expander*2+1)
+        input_pin = expander.get_pin(compartment_per_expander * 2)
+        output_pin = expander.get_pin(compartment_per_expander * 2 + 1)
         new_compartment = compartment.compartment(input_pin, output_pin)
-        new_compartment.LEDs = [LED_connector_1[space-1]]
+        new_compartment.LEDs = [space - 1]
+        new_compartment.LED_connector = hardware.LED_connector_1
         compartments[f"{counter}"] = new_compartment
         counter += 1
 
-logger.info(f"Battery status: {battery_monitor.cell_voltage:.2f}V, {battery_monitor.cell_percent:.1f} %")
-
-logger.info(f"{len(port_expanders)} compartment PCBs / rows detected.")
-if len(compartments) < compartment_number_saved:
-    logger.error(f"Insufficient compartment PCBs detected")
-
-# open all compartments
-def open_all():
-    for index in range(len(compartments)):
-        compartments[str(index+1)].open()
 
 # check door of all compartments
 def check_all():
     open_comps = []
     for index in range(len(compartments)):
-        if compartments[str(index+1)].get_inputs():
-            open_comps.append(str(index+1))
+        if compartments[str(index + 1)].get_inputs():
+            open_comps.append(str(index + 1))
     return open_comps
+
+# check if given code is in dict of valid codes, or a maintainance code. return compartment and status message
+def check_code(code):
+    if len(code) == 4:  # normal codes have 4 digits
+        status_code, valid_codes = flink.get_codes(logger)  # get codes from Flink
+        if status_code is not 200:
+            logger.error(f"Error response from Flink when getting codes: {status_code}")
+            return None, "error"
+        if valid_codes is not None:
+            for comp, comp_codes in valid_codes.items():
+                if code in comp_codes:
+                    return comp, "normal"
+        return None, "invalid"
+    elif len(code) == 8:  # maintainance codes have 8 digits
+        if code[2:8] == maintainance_code:
+            comp = int(code[0:2])
+            return str(comp), "maintainance" # converted string to int and back to remove leading zeros
+        else:
+            return None, "invalid"
+    else:
+        return None, "invalid"
+
 
 open_comps = check_all()
 if len(open_comps) is not 0:
     logger.warning(f"Open compartments: {open_comps}")
 
-last_cal = 0
-# calibrate touch pads
-def cal_touch():
-    cal_list = [0] * 7
-    reps = 10
-    margin = 40
-    status_label.text = "Touch-Kalibration\n    Bitte Tasten   \n  nicht berühren.  "
-    time.sleep(1)
-    for x in range(reps):
-        for idx, touch in enumerate(touch_inputs):
-            cal_list[idx] += touch.raw_value
-            time.sleep(0.01)
-            if x == reps - 1:
-                touch.threshold = round(cal_list[idx]/reps) + margin
-    last_cal = time.monotonic()
-    status_label.text=welcome_text
-
-keys = ["1","2","3","4","5","6","7","8","9","x","0","✓"]
-# read touch matrix
-def read_matrix():
-    # get all touch responses above threshold (touch margin)
-    for index, touch in enumerate(touch_inputs):
-        touch_margin[index] = touch.raw_value - touch.threshold
-    # get "strongest" column and row
-    column = touch_margin.index(max(touch_margin[4:]))
-    row = touch_margin.index(max(touch_margin[:4]))
-    # map column/row to key
-    if touch_inputs[column].value and touch_inputs[row].value:
-        return keys[row*3+(column-4)]
-    else:
-        return None
-
-logger.removeHandler(display_log) # stop logging to display
-
-welcome_text = "MAW Schlüsselkasten\n Buchungen auf Flink. \n  Bitte Code eingeben.  "
-invalid_text = f"    Code ungültig.    \n   Bitte prüfen Sie   \nBuchung und Uhrzeit."
-
-# Draw some label text
-rect2 = Rect(0, 0, 320, 240, fill=0xFFFFFF)
-default = displayio.Group()
-default.append(rect2)
-code_label = bitmap_label.Label(font_large, text="", color=0x006060, x=2, y=60, width=300)
-default.append(code_label)
-status_label = bitmap_label.Label(font_medium, text=welcome_text, color=0x006060, anchor_point=(0.5,0.5), anchored_position=(160,180))
-default.append(status_label)
-display.show(default)
-
-# prep icons
-check, palette = adafruit_imageload.load("/images/check.bmp", bitmap=displayio.Bitmap, palette=displayio.Palette)
-check_grid = displayio.TileGrid(check, pixel_shader=palette, x=115, y=203)
-x, palette = adafruit_imageload.load("/images/X.bmp", bitmap=displayio.Bitmap, palette=displayio.Palette)
-x_grid = displayio.TileGrid(x, pixel_shader=palette, x=292, y=203)
-icons = displayio.Group()
-icons.append(x_grid)
-icons.append(check_grid)
-
-#debug: valid_codes = {'1': ["1234", "1235"], '2':["2345", "2346"], '3':["3456", "3457"]}
-
-LED_internal.fill((30,30,30))
-
-# check if given code is in dict of valid codes
-def check_code(code):
-    if len(code) == 4: # normal codes have 4 digits
-        for comp, comp_codes in valid_codes.items():
-            if code in comp_codes:
-                return comp
-    elif len(code) == 8: # maintainance codes have 8 digits
-        if code[2:8] == maintainance_code:
-            comp = int(code[0:2])
-            code = "maintainance" # TODO: suppress printout of maintainance codes
-            if comp == 99:
-                open_all()
-            elif comp <= len(compartments):
-                return str(comp) # converted string to int and back to remove leading zeros
-
-# deal with compartment open/close logic
-def process_compartment(compartment_index):
-    # code valid
-    if compartment_index is not None and int(compartment_index) <= len(compartments):
-        compartments[compartment_index].set_LEDs((50,50,50))
-        LED_internal.fill((15,50,0))
-        status_label.text = f"Fach {compartment_index} wird geöffnet."
-        time.sleep(1) # wait a second for the user to read
-        status = compartments[compartment_index].open(1)
-        if compartments[compartment_index].content_status == "present":
-            task1 = "entnehmen"
-            task2 = "entnommen"
-        elif compartments[compartment_index].content_status == "empty":
-            task1 = "einlegen"
-            task2 = "eingelegt"
-        else:
-            instruction = "einlegen/entnehmen"
-        # successfully opened
-        if status == True:
-            status_label.text = f"Bitte Inhalt {task1}\nund Fach {compartment_index} schliessen."
-
-            time.sleep(1) # wait a second for the user to read
-        # not successfully opened, try again
-        else:
-            status_label.text = f"Fach blockiert?\nBitte drücken Sie\n leicht auf Fach {compartment_index}."
-            time.sleep(5) # wait for the user to read and check
-            status = compartments[compartment_index].open(3)
-            if status == True: # successfully opened
-                status_label.text = f"Bitte Inhalt {task1}\nund Fach {compartment_index} schliessen."
-            else:
-                status_label.text = f"Fach öffnet sich nicht.\nBitte erneut versuchen,\noder Alternative buchen."
-                logger.error(f"Door {compartment_index} did not open.")
-                time.sleep(8) # wait for user to read
-        # wait for user to close door
-        counter = 3000
-        while compartments[compartment_index].get_inputs() == True and counter > 0:
-            time.sleep(0.1)
-            counter -= 1
-            #wd.feed() # feed the watchdog
-        if counter == 0:
-            logger.warning(f"Door {compartment_index} not closed.")
-            compartments[compartment_index].door_status = "open"
-        else:
-            compartments[compartment_index].door_status = "closed"
-
-        # ask for content status
-        counter = 3000
-        default.append(icons)
-        if compartments[compartment_index].content_status == "unknown":
-            status_label.text = f"Haben Sie etwas eingelegt\n        oder entnommen?\neingelegt:     entnommen:    "
-            x_grid.x = 292
-        else:
-            status_label.text = f"Haben Sie den Inhalt\n      {task2}?\n    Ja:        Nein:     "
-            x_grid.x = 230
-            while counter > 0:
-                time.sleep(0.1)
-                counter -= 1
-                #wd.feed() # feed the watchdog
-                reply = read_matrix()
-                if reply == "✓":
-                    haptic.play()
-                    if compartments[compartment_index].content_status == "unknown" or compartments[compartment_index].content_status == "empty":
-                        compartments[compartment_index].content_status = "present"
-                    else:
-                        compartments[compartment_index].content_status = "empty"
-                    break
-                elif reply == "x":
-                    haptic.play()
-                    if compartments[compartment_index].content_status == "unknown" or compartments[compartment_index].content_status == "empty":
-                        compartments[compartment_index].content_status = "empty"
-                    else:
-                        compartments[compartment_index].content_status = "present"
-                    break
-        if counter == 0:
-            logger.warning(f"User did not answer status question.")
-            compartments[compartment_index].content_status = "unknown"
-
-        # reset UI
-        default.remove(icons)
-        compartments[compartment_index].set_LEDs((0,0,0))
-        LED_internal.fill((30,30,30))
-        status_label.text=welcome_text
-    # code invalid
-    else:
-        LED_internal.fill((90,0,0))
-        status_label.text=invalid_text
-        time.sleep(3)
-        LED_internal.fill((30,30,30))
-        status_label.text=welcome_text
+logger.info("Startup complete.")
 
 #
 # Normal operation
 #
-#wd.timeout = 10
-pressed_count = 2
 last_pressed = None
-cal_touch()
-buffer = [None] * pressed_count
-i = 0
 code = ""
 counter = 0
 
+logger.removeHandler(display_log)  # stop logging to display
+
+ui.main()  # configure main display with code and message
+
+microcontroller.watchdog.feed()
+
+hardware.LED_internal.fill((30, 30, 30))
+
+# debug, execution time profiling
+#last_time = time.monotonic()
+
 while True:
-    buffer[i] = read_matrix() # read into buffer
-    if len(set(buffer)) == 1: # if all buffer elements are the same
-        if buffer[i] != last_pressed:
-            last_pressed = buffer[i]
-            if buffer[i] is not None:
-                haptic.play()
-                button = buffer[i]
-                if button is "✓":
-                    compartment_index = check_code(code) # check if the code is in the list and return the compartment index if yes, None if not
-                    process_compartment(compartment_index)
-                    # Flink code log
-                    response = post_code_log(code, compartment_index)
-                    if compartment_index is not None:
-                        logger.info(f"Code {code} was entered, valid for compartment {compartment_index}, content status: {compartments[compartment_index].content_status}, door status: {compartments[compartment_index].door_status}.")
-                    else:
-                        logger.info(f"Code {code} was entered, invalid")
-                    code = ""
-                    code_label.text = code
-                elif button is "x":
-                    code = ""
-                    code_label.text = code
-                elif len(code) <= 8: # ignore anything above 8 chars
-                    code = code + button
-                    if len(code) <= 4:
-                        code_label.text = code
-                    if len(code) == 1: # when the first character is entered, check for codes # TODO: asynchronous
-                        status_code, valid_codes = get_codes()
-                        if status_code is not 200:
-                            logger.error(f"Error response from Flink when getting codes: {status_code}")
-    # handle index
-    i += 1
-    if i == pressed_count:
-        i = 0
+    key = hardware.read_keypad()  # read into buffer
+    if key != last_pressed:
+        last_pressed = key
+        if key is not None:
+            hardware.haptic.play()
+            if key is "✓":  # process input
+                compartment_index, status = check_code(code)  # check if the code is in the list and return the compartment index if yes, None if not
+                ui.process_compartment(compartments, compartment_index, logger)
+                if status == "maintainance":
+                    code = "maintainance"
+                # Flink code log
+                response = flink.post_code_log(logger, code, compartments, compartment_index)
+                if (compartment_index is not None) and (compartment_index in compartments):
+                    logger.info(f"Code '{code}' was entered, valid for compartment {compartment_index}, content status: {compartments[compartment_index].content_status}, door status: {compartments[compartment_index].door_status}.")
+                    # after logging, set status back to unknown - we do not want to rely on the user answering correctly/truthfully. TODO?: this makes part of the status query code useless, remove?
+                    # compartments[compartment_index].content_status = "unknown"
+                elif compartment_index == "99":
+                    logger.info("Maintainance code to open all compartments was entered.")
+                else:
+                    logger.info(f"Code '{code}' was entered, invalid")
+                code = ""
+                ui.code_label.text = code
+            elif key is "x":  # clear input
+                code = ""
+                ui.code_label.text = code
+            elif len(code) < 8:  # add number to code, ignore anything above 8 chars
+                code = code + key
+                if len(code) <= 4:
+                    ui.code_label.text = code
 
-    x, y, z = accelerometer.acceleration # in m/s2
-    if tamper_alarm == "on" and abs(z) > 1:  # check accelerometer
-        # TODO: message on screen, LEDs
-        piezo.duty_cycle = int(0.5*65536)
-    else:
-        piezo.duty_cycle = 0
-
-    if counter%20 == 0: # runs every second
-        # wd.feed() # feed the watchdog every second, after 5 s it will reset
-        try:
-            io.loop() # get updates from adafruit IO
-        except Exception as e:
-            logger.error(f"Error getting update from Adafruit IO: {e}")
-
-
-        light = light_sensor.visible_plus_ir_light - light_sensor.ir_light   # check brightness
-        if light <= 100: # > 100 is relatively bright, > 1000 very bright
-            if light < 0:
-                light = 0
-            backlight.duty_cycle = int((0.3+0.7*light/100)*65535)
-            LED_internal.brightness = 0.3+0.7*light/100
-            LED_connector_1.brightness = 0.3+0.7*light/100
-            LED_connector_2.brightness = 0.3+0.7*light/100
+    if hardware.accelerometer is not None and tamper_alarm == "on":
+        x, y, z = hardware.accelerometer.acceleration  # in m/s2
+        if abs(z) > 1:  # check accelerometer
+            # TODO: message on screen
+            hardware.LED_internal.fill((255, 0, 0))
+            hardware.piezo.duty_cycle = int(0.5 * 65536)
         else:
-            backlight.duty_cycle = int(1*65535)
-            LED_internal.brightness = 1
-            LED_connector_1.brightness = 1
-            LED_connector_2.brightness = 1
+            hardware.LED_internal.fill((0, 0, 0))
+            hardware.piezo.duty_cycle = 0
 
-    if counter == 6000: # runs every 5 minutes
+
+    if counter % 101 == 0:  # runs roughly every 5 s
+        microcontroller.watchdog.feed()  # reset the watchdog timer
+
+        # check wifi, reconnect if necessary, update icon
+        try:
+            wifi_connected = networking.connect_wifi()
+        except Exception as e:
+            logger.error(f"Error reconnecting to wifi: {e}")
+            wifi_connected = False
+        ui.no_wifi_grid.hidden = wifi.radio.connected
+
+        # check grid power connection
+        ui.no_power_grid.hidden = hardware.supply_present.value
+
+        if hardware.light_sensor is not None:
+            try:
+                light = hardware.light_sensor.visible_plus_ir_light - hardware.light_sensor.ir_light  # check brightness
+                if light > 100:  # > 100 is relatively bright, > 1000 very bright
+                    light = 100
+                elif light < 0:
+                    light = 0
+                hardware.backlight.duty_cycle = int((0.1 + 0.9 * light / 100) * 65535)
+                hardware.LED_internal.brightness = 0.1 + 0.9 * light / 100
+                hardware.LED_connector_1.brightness = 0.1 + 0.9 * light / 100
+                hardware.LED_connector_2.brightness = 0.1 + 0.9 * light / 100
+            except Exception as e:
+                logger.error(f"Error getting ambient brightness: {e}")
+
+    if counter % 301 == 0:  # runs roughly every 15 s
+        try:
+            io.loop()  # get updates from MQTT broker, takes 1-2 s
+        except Exception as e:
+            logger.error(f"Error getting update from MQTT broker: {e}")
+            try:
+                io.reconnect()
+            except Exception:
+                logger.error(f"Error reconnecting to MQTT broker: {e}")
+
+    if counter == 6001:  # runs roughly every 5 minutes
         counter = 0
-        put_status() # send status as keepalive
-        if battery_monitor.cell_percent < 30 or battery_monitor.cell_voltage < 3.5: # log if low battery
-            logger.warning(f"Battery low: {battery_monitor.cell_voltage:.2f}V, {battery_monitor.cell_percent:.1f} %")
+        #logger.info(f"5 min task")
+        # send status as keepalive
+        status_code = flink.put_status(logger, time.monotonic(), SN, version, compartment_number_saved, large_compartments)
+        if status_code is not 200:
+            logger.warning(f"Response from Flink: {status_code}.")
+            ui.no_flink_grid.hidden = False
+        else:
+            ui.no_flink_grid.hidden = True
+
+        # check battery status
+        if hardware.battery_monitor is not None:
+            if hardware.battery_monitor.cell_voltage < 3.5:  # log if low battery
+                logger.warning(f"Battery low: {battery_monitor.cell_voltage:.2f}V, {battery_monitor.cell_percent:.1f} %")
+                ui.low_battery_grid.hidden = False
+            else:
+                ui.low_battery_grid.hidden = True
+
         # regularly reset device, eg at 3 AM. if time says 3 and runtime is > 3:20 h -> reset.
         # time.monotonic criterion prevents repeated resets between 3 and 4, and prevents resets 3h after restart if time is not realtime
         if time.localtime().tm_hour == 3 and time.monotonic() > 12000:
             microcontroller.reset()
 
-        # every hour, recalibrate the touch panel
-        if time.monotonic() > (last_cal + 3600):
-            cal_touch()
-
     counter += 1
-    time.sleep(0.05)
+    time.sleep(0.045)  # goal repetition time is 50 ms
+    #time_now = time.monotonic()
+    #print(f"{time_now - last_time}") # debug: timing check
+    #last_time = time_now
+
