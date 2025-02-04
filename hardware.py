@@ -1,3 +1,7 @@
+#
+# Schlüsselkasten Hardware SETUP
+#
+
 import busio
 import board
 import pwmio
@@ -10,6 +14,9 @@ from adafruit_ltr329_ltr303 import LTR329 # light sensor
 import adafruit_drv2605 # haptic driver
 from adafruit_max1704x import MAX17048 # battery monitor
 import adafruit_mpr121 # touch sensor
+
+# version string
+version = "1.2.1"
 
 backlight = pwmio.PWMOut(board.A5, frequency=1000, duty_cycle=int(1 * 65535))
 
@@ -28,7 +35,7 @@ LED_connector_1 = neopixel.NeoPixel(board.A1, 32)
 LED_connector_2 = neopixel.NeoPixel(board.A0, 32)
 
 # piezo buzzer
-piezo = pwmio.PWMOut(board.MISO, frequency=1000, duty_cycle=0)
+#piezo = pwmio.PWMOut(board.MISO, frequency=1000, duty_cycle=0)
 
 # bus init
 i2c = busio.I2C(board.SCL, board.SDA, frequency=50000)
@@ -39,31 +46,31 @@ try:
     haptic.sequence[0] = adafruit_drv2605.Effect(1) # effect 1: strong click, 4: sharp click, 24: sharp tick,  27: short double click strong, 16: 1000 ms alert
 except Exception as e:
     haptic = None
-    logger.error(f"Error setting up haptic engine: {e}")
+    #TODO: logger.error(f"Error setting up haptic engine: {e}")
 
 try:
     accelerometer = adafruit_lis3dh.LIS3DH_I2C(i2c, address=0x19)
 except Exception as e:
     accelerometer = None
-    logger.error(f"Error setting up accelerometer: {e}")
+    #TODO: logger.error(f"Error setting up accelerometer: {e}")
 
 try:
     light_sensor = LTR329(i2c) # 0x29
 except Exception as e:
     light_sensor = None
-    logger.error(f"Error setting up brightness sensor: {e}")
+    #TODO: logger.error(f"Error setting up brightness sensor: {e}")
 
 try: # some boards have a different or no battery monitor, deal with it
     battery_monitor = MAX17048(i2c) # 0x36
 except Exception:
     battery_monitor = None
-    logger.error(f"Error setting up battery monitor: {e}")
+    #TODO: logger.error(f"Error setting up battery monitor: {e}")
 
 try:
     touch_sensor = adafruit_mpr121.MPR121(i2c, address=0x5B) # 0x5B, ADDR to VCC / close jumper
 except Exception as e:
     touch_sensor = None
-    logger.error(f"Error setting up touch sensor: {e}")
+    #TODO: logger.error(f"Error setting up touch sensor: {e}")
 
 # also on the bus at 0x38: touch screen controller FT6206
 
@@ -80,11 +87,14 @@ keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "x", "0", "✓"]
 # read touch pads with MPR121
 def read_keypad():
     touched_list = []
-    touched = touch_sensor.touched()
-    for i in range(12):
-        if touched & (1 << i):
-            touched_list.append(i)
-    if len(touched_list) == 1:  # only if exactly one button is pressed
-        return keys[touched_list[0]]  # assumes pads are wired sequentially
+    if touch_sensor is not None:
+        touched = touch_sensor.touched()
+        for i in range(12):
+            if touched & (1 << i):
+                touched_list.append(i)
+        if len(touched_list) == 1:  # only if exactly one button is pressed
+            return keys[touched_list[0]]  # assumes pads are wired sequentially
+        else:
+            return None
     else:
         return None

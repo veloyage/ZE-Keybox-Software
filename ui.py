@@ -1,5 +1,5 @@
 #
-# Schlüsselkasten DISPLAY SETUP
+# Schlüsselkasten UI/DISPLAY SETUP
 #
 
 import board
@@ -24,11 +24,9 @@ from hardware import LED_internal, LED_connector_1, LED_connector_2, backlight, 
 # import adafruit_miniqr
 
 # version string
-version = "1.1.0"
+version = "1.2.0"
 
 text_color = 0x005050
-
-
 
 spi = busio.SPI(board.SCK, MOSI=board.MOSI)
 

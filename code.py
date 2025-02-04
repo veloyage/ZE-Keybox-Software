@@ -18,6 +18,7 @@
 # 1.0.0: initial production version, switched back to MQTT API
 # 1.1.0: bugfixes, commented sections removed, CP9.0 compatible, HW revision variable added, made all I2C ICs "optional", visual modifications, added error/warning icons,
 # 1.2.0: compartmentalized into ui.py, hardware.py, flink.py, networking.py
+# 1.2.1: watchdog adjustments, improved log deletion when disk full
 
 
 # TODO: add OTA updating, get time from adafruit to account for DST
@@ -55,11 +56,11 @@ import flink
 import networking
 
 # version string
-version = "1.2.0"
+version = "1.2.1"
 
 # enable watchdog to reset on error
-microcontroller.watchdog.timeout = 30 #  seconds
-microcontroller.watchdog.mode = watchdog.WatchDogMode.RAISE  # watchdog.WatchDogMode.RESET
+microcontroller.watchdog.timeout = 60 #  seconds
+microcontroller.watchdog.mode = watchdog.WatchDogMode.RESET  # watchdog.WatchDogMode.RESET
 
 #
 # LOAD VARIABLES
@@ -102,12 +103,15 @@ try:
     # check if there is enough space and delete old logs if necessary
     fsstat = os.statvfs("/")
     free = fsstat[0] * fsstat[3]
-    while free < 500000:
+    print(free)
+    while free < 200000: # while less than ~200 kB space: delete files
         logfilelist = os.listdir("/logs/")
         logfilelist.sort()
+        print(logfilelist[0])
         os.remove("/logs/" + logfilelist[0])
         fsstat = os.statvfs("/")
         free = fsstat[0] * fsstat[3]
+        print(free)
     file_handler = logging.FileHandler(filename)
     logger.addHandler(file_handler)
     logger.info("Logging to local file started.")
