@@ -419,7 +419,7 @@ while True:
         ui.no_wifi_grid.hidden = wifi.radio.connected
 
         # check grid power connection
-        ui.no_power_grid.hidden = hardware.supply_present.value
+        ui.no_power_grid.hidden = True # disabled, unreliable # hardware.supply_present.value
 
         if hardware.light_sensor is not None:
             try:

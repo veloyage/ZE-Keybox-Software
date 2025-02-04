@@ -35,7 +35,7 @@ LED_connector_1 = neopixel.NeoPixel(board.A1, 32)
 LED_connector_2 = neopixel.NeoPixel(board.A0, 32)
 
 # piezo buzzer
-#piezo = pwmio.PWMOut(board.MISO, frequency=1000, duty_cycle=0)
+piezo = pwmio.PWMOut(board.MISO, frequency=1000, duty_cycle=0)
 
 # bus init
 i2c = busio.I2C(board.SCL, board.SDA, frequency=50000)
