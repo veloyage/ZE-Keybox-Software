@@ -100,15 +100,14 @@ try:
     else:
         filename = f"/logs/{format_time()}.log"
     # check if there is enough space and delete old logs if necessary
-    while True:
+    fsstat = os.statvfs("/")
+    free = fsstat[0] * fsstat[3]
+    while free < 500000:
+        logfilelist = os.listdir("/logs/")
+        logfilelist.sort()
+        os.remove("/logs/" + logfilelist[0])
         fsstat = os.statvfs("/")
         free = fsstat[0] * fsstat[3]
-        if free > 100000:  # ~100kb should be more than enough for one new logfile
-            break
-        else:   # if too little free space, delete oldest logfile
-            logfilelist = os.listdir("/logs/")
-            logfilelist.sort()
-            os.remove("/logs/" + logfilelist[0])
     file_handler = logging.FileHandler(filename)
     logger.addHandler(file_handler)
     logger.info("Logging to local file started.")
